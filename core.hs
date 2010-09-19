@@ -1,6 +1,6 @@
 #!/usr/bin/runhaskell
-module Mbot.Core where
-import Mbot.IRC as IRC
+module Main where
+import IRC as IRC
 
 server = "irc.freenode.org"
 port = 6667

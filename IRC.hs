@@ -1,4 +1,4 @@
-module Mbot.IRC (
+module IRC (
 createChannelMessage,
 createStartMessage,
 createJoinMessage,
