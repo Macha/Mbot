@@ -20,9 +20,6 @@ type CommandName = String
 createChannelMessage :: ChannelName -> String -> RawIRCMessage
 createChannelMessage channel message = "PRIVMSG "  ++ channel ++ " :" ++ message 
 
-createStartMessage :: Username -> [RawIRCMessage]
-createStartMessage username = map unwords [["NICK",  username], ["USER ", username, "8", "*", ":Haskell bot"]]
-
 createPongMessage :: RawIRCMessage -> RawIRCMessage
 createPongMessage ping = "PONG :" ++ getPingServer ping 
 
