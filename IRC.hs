@@ -1,12 +1,4 @@
 module IRC (
-createChannelMessage,
-createStartMessage,
-createJoinMessage,
-createPartMessage,
-getPingServer,
-createPongMessage,
-getMultiWordPortion,
-split,
 startIRC
 )
 where
@@ -29,7 +21,7 @@ createChannelMessage :: ChannelName -> String -> RawIRCMessage
 createChannelMessage channel message = "PRIVMSG "  ++ channel ++ " :" ++ message 
 
 createStartMessage :: Username -> [RawIRCMessage]
-createStartMessage username = ["NICK " ++ username, "USER " ++ username ++ "8" ++ "* : Haskell bot"]
+createStartMessage username = map unwords [["NICK",  username], ["USER ", username, "8", "*", ":Haskell bot"]]
 
 createPongMessage :: RawIRCMessage -> RawIRCMessage
 createPongMessage ping = "PONG :" ++ getPingServer ping 
