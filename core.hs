@@ -7,7 +7,5 @@ import System.IO
 
 main = do 
     (server:port:nick:channel:xs) <- getArgs
-    initIRC server (read port :: Int) nick channel
+    IRC.startIRC server (read port :: Int) nick channel
 
-initIRC :: String -> Int -> String -> String -> IO ()
-initIRC = IRC.startIRC
