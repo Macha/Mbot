@@ -1,4 +1,4 @@
 Mbot
-==
+----
 
-An IRC logbot written in haskell. Run it, and it logs messages for the channel specified in core.hs to a file called mbot.log.
+An IRC logbot written in haskell. Run it using `mbot <server> <port> <nick> <channel>`

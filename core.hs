@@ -1,10 +1,13 @@
 #!/usr/bin/runhaskell
 module Main where
 import IRC as IRC
+import Data.List
+import System.Environment
+import System.IO
 
-server = "irc.freenode.org"
-port = 6667
-nick = "hbottest"
-channel = "#hbot-channel"
+main = do 
+    (server:port:nick:channel:xs) <- getArgs
+    initIRC server (read port :: Int) nick channel
 
-main = IRC.startIRC server port nick channel 
+initIRC :: String -> Int -> String -> String -> IO ()
+initIRC = IRC.startIRC
