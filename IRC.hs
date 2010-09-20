@@ -5,6 +5,7 @@ where
 
 import Data.Bits
 import Data.List
+import Control.Monad
 import qualified Data.Map as Map
 import Network
 import System.IO
@@ -18,16 +19,16 @@ type LogHandle = Handle
 type CommandName = String
 
 createChannelMessage :: ChannelName -> String -> RawIRCMessage
-createChannelMessage channel message = "PRIVMSG "  ++ channel ++ " :" ++ message 
+createChannelMessage channel message = unwords ["PRIVMSG", channel, ":", message]
 
 createPongMessage :: RawIRCMessage -> RawIRCMessage
 createPongMessage ping = "PONG :" ++ getPingServer ping 
 
 createJoinMessage :: ChannelName -> RawIRCMessage
-createJoinMessage channel = "JOIN " ++ channel
+createJoinMessage channel = unwords ["JOIN", channel]
 
 createPartMessage :: ChannelName -> RawIRCMessage
-createPartMessage channel = "PART " ++ channel
+createPartMessage channel = unwords ["PART", channel]
 
 getPingServer :: RawIRCMessage -> String
 getPingServer = getMultiWordPortion
@@ -101,19 +102,12 @@ listen nh fh = forever $ do
        if ping s then pong s else eval nh fh s
        putStrLn s
    where
-       forever a = a >> forever a 
        ping x = "PING" `isPrefixOf` x
        pong x = hPrintf nh $ (createPongMessage x) ++ "\r\n" 
 
 eval :: IRCHandle -> LogHandle -> String -> IO ()
 eval nh fh message
     | commandHasFormatter command = logMessage fh (Map.lookup command commandFormatters) message
-    -- | checkCommandName message "PRIVMSG" = logMessage fh formatPrivmsgForLog message
-    -- | checkCommandName message "JOIN" = logMessage fh formatJoinForLog message
-    -- | checkCommandName message "QUIT" = logMessage fh formatQuitForLog message
-    -- | checkCommandName message "NOTICE" = logMessage fh formatNoticeForLog message
-    -- | checkCommandName message "353" = logMessage fh formatNamesListForLog message
-    -- | checkCommandName message "332" = logMessage fh formatTopicForLog message
     | commandIsIgnorable message = return ()
     | otherwise = hPutStrLn fh message
     where command = getCommandName message
