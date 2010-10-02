@@ -19,9 +19,30 @@ type IRCHandle = Handle
 type LogHandle = Handle
 type CommandName = String
 type PrivmsgCommandName = String
+type ChannelList = Map.Map ChannelName ChannelWatch
 
-createChannelMessage :: ChannelName -> String -> RawIRCMessage
-createChannelMessage channel message = unwords ["PRIVMSG", channel, ":", message]
+data ChannelWatch = ChannelWatch {
+                            connection :: IRCConnection,
+                            channelName :: ChannelName }
+
+data IRCConnection = IRCConnection { 
+                                    serverName :: String,
+                                    network :: IRCHandle,
+                                    logHandle :: LogHandle,
+                                    channels :: ChannelList,
+                                    nickUsed :: String }
+
+-- Command Creation
+-- These take a command's parameter, and return a string that can be sent to the server.
+
+createChannelMessage :: ChannelWatch -> String -> RawIRCMessage
+createChannelMessage channel message = unwords ["PRIVMSG", channelName channel, ":", message]
+
+createNickMessage :: String -> RawIRCMessage
+createNickMessage nick = unwords ["NICK", nick]
+
+createUserMessage :: String -> RawIRCMessage
+createUserMessage nick = "USER" ++ nick ++ " 0 * :" ++ nick
 
 createPongMessage :: RawIRCMessage -> RawIRCMessage
 createPongMessage ping = "PONG :" ++ getPingServer ping 
@@ -32,17 +53,34 @@ createJoinMessage channel = unwords ["JOIN", channel]
 createPartMessage :: ChannelName -> RawIRCMessage
 createPartMessage channel = unwords ["PART", channel]
 
+createQuitMessage = "QUIT" -- Mostly for consistency
+
+-- Message Parsing 
+-- These take a command, and extract relevant information from it.
+
 getPingServer :: RawIRCMessage -> String
 getPingServer = getMultiWordPortion
 
-getMultiWordPortion :: String -> String
-getMultiWordPortion = concat . tail . split ':' . drop 1
+getMultiWordPortion :: RawIRCMessage -> String
+getMultiWordPortion = concat . tail . split ':' . tail 
+
+getHostMask :: RawIRCMessage -> Username
+getHostMask = takeWhile(/= ' ') . tail . dropWhile (/= '!')
  
 getUser :: RawIRCMessage -> Username
-getUser = drop 1 . takeWhile (/= '!')
+getUser = tail . takeWhile (/= '!')
+
+-- Does not work for JOIN
+getRoom :: RawIRCMessage -> ChannelName
+-- RTL: Drop user info, drop space after user info, drop command, drop space after command, get first parameter (room where relevant)
+getRoom = takeWhile (/= ' ') . tail . dropWhile (/= ' ') . tail . dropWhile (/= ' ')
+
+-- Use getRoom for all other commands but join.
+getJoinRoom :: RawIRCMessage -> ChannelName
+getJoinRoom = getMultiWordPortion
 
 getCommandName :: RawIRCMessage -> CommandName
-getCommandName = takeWhile (/= ' ') . drop 1 . dropWhile (/= ' ') 
+getCommandName = takeWhile (/= ' ') . tail . dropWhile (/= ' ') 
 
 getPrivmsgCommandName :: RawIRCMessage -> PrivmsgCommandName
 getPrivmsgCommandName = takeWhile (/= ' ') . getMultiWordPortion
@@ -52,6 +90,9 @@ getUserAndMessage :: RawIRCMessage -> (Username, String)
 getUserAndMessage x = (username, message) where
                 username = getUser x 
                 message = getMultiWordPortion x
+
+-- Format Messages For Logs
+-- These take a recieved message, and return a format suitable for writing to the log file.
 
 formatFromUserForLog :: RawIRCMessage -> String -> String
 formatFromUserForLog format_string x = printf format_string username message where  
@@ -77,14 +118,18 @@ formatTopicForLog = printf "Topic: %s" . getMultiWordPortion
 formatNamesListForLog :: RawIRCMessage -> String
 formatNamesListForLog = printf "Users in room: %s" . getMultiWordPortion
 
-handlePrivmsg :: IRCHandle -> LogHandle -> RawIRCMessage -> ChannelName -> IO ()
-handlePrivmsg nh fh message channel 
+-- PM Handlers
+-- These handle private message commands that need to be reacted to.
+
+handlePrivmsg :: IRCHandle -> LogHandle -> RawIRCMessage -> Maybe ChannelWatch -> IO ()
+handlePrivmsg nh fh message (Just channel)
     | privmsgIsHandled command_name = runHandler (Map.lookup command_name privmsgHandlers) channel nh
     | otherwise = logMessage fh (Just formatPrivmsgForLog) message
     where
         command_name = getPrivmsgCommandName message
+handlePrivmsg nh fh message Nothing = return ()
    
-runHandler :: Maybe (ChannelName -> IRCHandle -> IO ()) -> ChannelName -> IRCHandle -> IO ()
+runHandler :: Maybe (ChannelWatch -> IRCHandle -> IO ()) -> ChannelWatch -> IRCHandle -> IO ()
 runHandler (Just f) = f
 
 privmsgHandlers = Map.fromList [
@@ -95,71 +140,21 @@ privmsgHandlers = Map.fromList [
 privmsgIsHandled :: PrivmsgCommandName -> Bool
 privmsgIsHandled command = Map.member command privmsgHandlers
 
-sendTextToChannel :: String -> ChannelName -> IRCHandle -> IO ()
-sendTextToChannel message channel handle = hPutStrLn handle $ createChannelMessage channel message
-
-sendVersion ::  ChannelName -> IRCHandle -> IO ()
+sendVersion ::  ChannelWatch -> IRCHandle -> IO ()
 sendVersion = sendTextToChannel "0.1" 
 
-sendInfo :: ChannelName -> IRCHandle -> IO ()
+sendInfo :: ChannelWatch -> IRCHandle -> IO ()
 sendInfo channel = sendTextToChannel "Version 0.1" channel
 
-sendCommandList :: ChannelName -> IRCHandle -> IO ()
+sendCommandList :: ChannelWatch -> IRCHandle -> IO ()
 sendCommandList = sendTextToChannel "!info, !version, !commands"
 
-split :: Char -> String -> [String]
-split delim [] = [""]
-split delim (c:cs) 
-    | c == delim = "" : rest
-    | otherwise = (c : head rest) : tail rest
-    where
-        rest = split delim cs
+-- General Handlers
+-- These handle commands that aren't PMs. Also responsible for passing the PM messages off.
 
-startIRC :: String -> Int -> String -> String -> IO () 
-startIRC server port nick channel = do
-    file_handle <- openFile "mbot.log" AppendMode
-    network_handle <- connectTo server (PortNumber (fromIntegral port))
-    hSetBuffering network_handle NoBuffering
-    hSetBuffering file_handle NoBuffering
-    write network_handle "NICK" nick
-    write network_handle "USER" $ nick ++ " 0 * :" ++ nick
-    handleFirstPing network_handle channel 0 -- Some networks include a pong reply as part of the join process
-    -- write network_handle "JOIN" channel
-    listen network_handle file_handle channel
-
-handleFirstPing :: IRCHandle -> ChannelName -> Int -> IO ()
-handleFirstPing nh channel counter = do
-    t <- hGetLine nh
-    let recieved = init t
-    if ping recieved
-        then pong recieved 
-        else if counter < 10
-            then handleFirstPing nh channel (counter + 1)
-            else write nh "JOIN" channel -- Presume network doesn't need PONG, prevent excessive delays in startup
-    where
-        ping x = "PING" `isPrefixOf` x
-        pong x = do 
-            hPrintf nh $ (createPongMessage x) ++ "\r\n" 
-            write nh "JOIN" channel
-
-write :: Handle -> String -> String -> IO ()
-write h s t = do
-    hPrintf h "%s %s\r\n" s t
-    printf "> %s %s\n" s t
-
-listen :: IRCHandle -> LogHandle -> String -> IO ()
-listen nh fh channel = forever $ do
-    t <- hGetLine nh 
-    let recieved = init t
-    if ping recieved then pong recieved else eval nh fh recieved channel
-    putStrLn recieved
-    where
-       ping x = "PING" `isPrefixOf` x
-       pong x = hPrintf nh $ (createPongMessage x) ++ "\r\n" 
-
-eval :: IRCHandle -> LogHandle -> RawIRCMessage -> ChannelName -> IO ()
-eval nh fh message channel
-    | checkCommandName message "PRIVMSG" = handlePrivmsg nh fh message channel
+eval :: IRCConnection -> LogHandle -> RawIRCMessage -> ChannelName -> IO ()
+eval con fh message channel
+    | checkCommandName message "PRIVMSG" = handlePrivmsg (network con) fh message (Map.lookup channel (channels con))
     | commandHasFormatter command = logMessage fh (Map.lookup command commandFormatters) message
     | commandIsIgnorable message = return ()
     | otherwise = hPutStrLn fh message
@@ -207,6 +202,74 @@ commandIsIgnorable message = getCommandName message `elem` ignorableCommands
 
 checkCommandName :: RawIRCMessage -> CommandName -> Bool
 checkCommandName recieved command = command == getCommandName recieved 
+
+
+-- Utility function
+split :: Char -> String -> [String]
+split delim [] = [""]
+split delim (c:cs) 
+    | c == delim = "" : rest
+    | otherwise = (c : head rest) : tail rest
+    where
+        rest = split delim cs
+
+-- Sets up the main IRC connection.
+startIRC :: String -> Int -> String -> String -> IO () 
+startIRC server port nick channel = do
+    file_handle <- openFile "mbot.log" AppendMode
+    network_handle <- connectTo server (PortNumber (fromIntegral port))
+
+    hSetBuffering network_handle NoBuffering
+    hSetBuffering file_handle NoBuffering
+
+    hPutStrLn network_handle $ createNickMessage nick
+    hPutStrLn network_handle $ createUserMessage nick
+
+    let connection = IRCConnection server network_handle file_handle Map.empty nick
+    handleFirstPing connection channel -- Some networks include a pong reply as part of the join process
+    listen connection file_handle channel
+
+-- Input methods
+-- These actually get data from the server.
+
+handleFirstPing :: IRCConnection -> ChannelName -> IO ()
+handleFirstPing con channel = handleFirstPing' con channel 0 where
+    handleFirstPing' :: IRCConnection -> ChannelName -> Int -> IO ()
+    handleFirstPing' con channel counter = do
+        recieved <- recieveMessage (network con)
+        handlePing (network con) recieved (hPutStrLn (network con) $ "JOIN" ++ channel ++ "\r\n") $
+            if counter < 10
+                then handleFirstPing' con channel (counter + 1)
+                else hPutStrLn (network con) $ createJoinMessage channel -- Presume network doesn't need PONG, prevent excessive delays in startup
+
+handlePing :: IRCHandle -> String -> IO () -> IO () -> IO ()
+handlePing nh message pingfunc elsefunc
+    | "PING" `isPrefixOf` message = hPutStrLn nh (createPongMessage message) >> pingfunc
+    | otherwise = elsefunc
+
+listen :: IRCConnection -> LogHandle -> String -> IO ()
+listen con fh channel = forever $ do
+    recieved <- recieveMessage (network con)
+    handlePing (network con) recieved (return ()) (eval con fh recieved channel)
+    putStrLn recieved
+
+recieveMessage :: IRCHandle -> IO String
+recieveMessage nh = hGetLine nh >>= return . init
+
+-- Output metods
+-- These actually send data to the server.
+doJoin :: IRCConnection -> ChannelName -> IO IRCConnection
+doJoin con channel = do
+    let message = createJoinMessage channel
+    hPutStrLn (network con) message
+    let channel_watch = ChannelWatch con channel
+    let new_channels = Map.insert channel channel_watch $ channels con
+    let new_con = IRCConnection (serverName con) (network con) (logHandle con) new_channels (nickUsed con)
+    return new_con
+    
+
+sendTextToChannel :: String -> ChannelWatch -> IRCHandle -> IO ()
+sendTextToChannel message channel handle = hPutStrLn handle $ createChannelMessage channel message
 
 logMessage :: LogHandle -> Maybe (RawIRCMessage -> String) -> RawIRCMessage -> IO ()
 logMessage fh (Just formatf) = hPutStrLn fh . formatf 

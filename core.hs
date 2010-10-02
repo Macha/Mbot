@@ -6,6 +6,10 @@ import System.Environment
 import System.IO
 
 main = do 
-    (server:port:nick:channel:xs) <- getArgs
-    IRC.startIRC server (read port :: Int) nick channel
+    args <- getArgs
+    handleArgs args
 
+
+handleArgs :: [String] -> IO ()
+handleArgs (server:port:nick:channel:xs) = IRC.startIRC server (read port :: Int) nick channel
+handleArgs (server:nick:channel:xs) = IRC.startIRC server 6667 nick channel
