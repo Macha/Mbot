@@ -11,5 +11,6 @@ main = do
 
 
 handleArgs :: [String] -> IO ()
-handleArgs (server:port:nick:channel:xs) = IRC.startIRC server (read port :: Int) nick channel
-handleArgs (server:nick:channel:xs) = IRC.startIRC server 6667 nick channel
+handleArgs (server:nick:channel:[]) = IRC.startIRC server 6667 nick channel
+handleArgs (server:port:nick:channel:[]) = IRC.startIRC server (read port :: Int) nick channel
+handleArgs _ = putStrLn "Wrong arguments"
