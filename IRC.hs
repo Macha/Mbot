@@ -32,6 +32,9 @@ data IRCConnection = IRCConnection {
                                     channels :: ChannelList,
                                     nickUsed :: String }
 
+
+maxWaitForFirstPing = 10 
+
 -- Command Creation
 -- These take a command's parameter, and return a string that can be sent to the server.
 
@@ -42,7 +45,7 @@ createNickMessage :: String -> RawIRCMessage
 createNickMessage nick = unwords ["NICK", nick]
 
 createUserMessage :: String -> RawIRCMessage
-createUserMessage nick = "USER" ++ nick ++ " 0 * :" ++ nick
+createUserMessage nick = "USER " ++ nick ++ " 0 * :" ++ nick
 
 createPongMessage :: RawIRCMessage -> RawIRCMessage
 createPongMessage ping = "PONG :" ++ getPingServer ping 
@@ -85,6 +88,8 @@ getCommandName = takeWhile (/= ' ') . tail . dropWhile (/= ' ')
 getPrivmsgCommandName :: RawIRCMessage -> PrivmsgCommandName
 getPrivmsgCommandName = takeWhile (/= ' ') . getMultiWordPortion
 
+getArgumentByPosition :: RawIRCMessage -> Int -> CommandName
+getArgumentByPosition message pos = words message !! pos
 
 getUserAndMessage :: RawIRCMessage -> (Username, String)
 getUserAndMessage x = (username, message) where
@@ -117,6 +122,12 @@ formatTopicForLog = printf "Topic: %s" . getMultiWordPortion
 
 formatNamesListForLog :: RawIRCMessage -> String
 formatNamesListForLog = printf "Users in room: %s" . getMultiWordPortion
+
+formatNickChangeForLog :: RawIRCMessage -> String
+formatNickChangeForLog = formatFromUserForLog "%s changed nick to %s"
+
+formatPartForLog :: RawIRCMessage -> String
+formatPartForLog message = printf "%s left %s" (getUser message) ((words message) !! 3)
 
 -- PM Handlers
 -- These handle private message commands that need to be reacted to.
@@ -166,6 +177,8 @@ commandHasFormatter command = Map.member command commandFormatters
 commandFormatters = Map.fromList [
     ("PRIVMSG", formatPrivmsgForLog),
     ("JOIN", formatJoinForLog),
+    ("NICK", formatNickChangeForLog),
+    ("PART", formatPartForLog),
     ("QUIT", formatQuitForLog),
     ("NOTICE", formatNoticeForLog),
     ("353", formatNamesListForLog),
@@ -195,7 +208,9 @@ ignorableCommands = [
     -- MOTD related
     "372", -- MOTD
     "375", -- MOTD start
-    "376"] -- End of MOTD
+    "376", -- End of MOTD
+    -- Other
+    "451"] -- Attempting to send messages before signing in right
 
 commandIsIgnorable :: String -> Bool
 commandIsIgnorable message = getCommandName message `elem` ignorableCommands
@@ -222,46 +237,49 @@ startIRC server port nick channel = do
     hSetBuffering network_handle NoBuffering
     hSetBuffering file_handle NoBuffering
 
-    hPutStrLn network_handle $ createNickMessage nick
-    hPutStrLn network_handle $ createUserMessage nick
-
     let connection = IRCConnection server network_handle file_handle Map.empty nick
-    handleFirstPing connection channel -- Some networks include a pong reply as part of the join process
-    listen connection file_handle channel
+    putIRCLn network_handle $ createNickMessage nick
+    putIRCLn network_handle $ createUserMessage nick
+
+    handleFirstPing connection -- Some networks include a pong reply as part of the join process
+    connection' <- doJoin connection channel
+    listen connection' file_handle channel
 
 -- Input methods
 -- These actually get data from the server.
 
-handleFirstPing :: IRCConnection -> ChannelName -> IO ()
-handleFirstPing con channel = handleFirstPing' con channel 0 where
-    handleFirstPing' :: IRCConnection -> ChannelName -> Int -> IO ()
-    handleFirstPing' con channel counter = do
-        recieved <- recieveMessage (network con)
-        handlePing (network con) recieved (hPutStrLn (network con) $ "JOIN" ++ channel ++ "\r\n") $
-            if counter < 10
-                then handleFirstPing' con channel (counter + 1)
-                else hPutStrLn (network con) $ createJoinMessage channel -- Presume network doesn't need PONG, prevent excessive delays in startup
+handleFirstPing :: IRCConnection -> IO ()
+handleFirstPing con = handleFirstPing' (network con) 0 where
+    handleFirstPing' :: IRCHandle -> Int -> IO ()
+    handleFirstPing' nh counter = do
+        recieved <- recieveMessage nh
+        handlePing nh recieved (return ()) $
+            if counter < maxWaitForFirstPing
+                then handleFirstPing' nh (counter + 1)
+                else return () -- Presume network doesn't need PONG, prevent excessive delays in startup
 
 handlePing :: IRCHandle -> String -> IO () -> IO () -> IO ()
 handlePing nh message pingfunc elsefunc
-    | "PING" `isPrefixOf` message = hPutStrLn nh (createPongMessage message) >> pingfunc
+    | "PING" `isPrefixOf` message = putIRCLn nh (createPongMessage message) >> pingfunc 
     | otherwise = elsefunc
 
 listen :: IRCConnection -> LogHandle -> String -> IO ()
 listen con fh channel = forever $ do
     recieved <- recieveMessage (network con)
     handlePing (network con) recieved (return ()) (eval con fh recieved channel)
-    putStrLn recieved
 
 recieveMessage :: IRCHandle -> IO String
 recieveMessage nh = hGetLine nh >>= return . init
+
+putIRCLn :: IRCHandle -> String -> IO ()
+putIRCLn nh str = hPrintf nh (str ++ "\r\n")
 
 -- Output metods
 -- These actually send data to the server.
 doJoin :: IRCConnection -> ChannelName -> IO IRCConnection
 doJoin con channel = do
     let message = createJoinMessage channel
-    hPutStrLn (network con) message
+    putIRCLn (network con) message
     let channel_watch = ChannelWatch con channel
     let new_channels = Map.insert channel channel_watch $ channels con
     let new_con = IRCConnection (serverName con) (network con) (logHandle con) new_channels (nickUsed con)
@@ -269,7 +287,7 @@ doJoin con channel = do
     
 
 sendTextToChannel :: String -> ChannelWatch -> IRCHandle -> IO ()
-sendTextToChannel message channel handle = hPutStrLn handle $ createChannelMessage channel message
+sendTextToChannel message channel handle = putIRCLn handle $ createChannelMessage channel message
 
 logMessage :: LogHandle -> Maybe (RawIRCMessage -> String) -> RawIRCMessage -> IO ()
 logMessage fh (Just formatf) = hPutStrLn fh . formatf 
