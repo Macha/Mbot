@@ -20,13 +20,14 @@ type LogHandle = Handle
 type CommandName = String
 type PrivmsgCommandName = String
 type ChannelList = Map.Map ChannelName ChannelWatch
+type ServerName = String
 
 data ChannelWatch = ChannelWatch {
                             connection :: IRCConnection,
                             channelName :: ChannelName }
 
 data IRCConnection = IRCConnection { 
-                                    serverName :: String,
+                                    serverName :: ServerName,
                                     network :: IRCHandle,
                                     logHandle :: LogHandle,
                                     channels :: ChannelList,
@@ -38,8 +39,13 @@ maxWaitForFirstPing = 10
 -- Command Creation
 -- These take a command's parameter, and return a string that can be sent to the server.
 
+
 createChannelMessage :: ChannelWatch -> String -> RawIRCMessage
-createChannelMessage channel message = unwords ["PRIVMSG", channelName channel, ":", message]
+createChannelMessage channel message = createPrivateMessage (channelName channel) message
+
+createPrivateMessage :: String -> String -> RawIRCMessage
+createPrivateMessage target message = unwords ["PRIVMSG", target, ':':message]
+
 
 createNickMessage :: String -> RawIRCMessage
 createNickMessage nick = unwords ["NICK", nick]
@@ -229,21 +235,32 @@ split delim (c:cs)
         rest = split delim cs
 
 -- Sets up the main IRC connection.
-startIRC :: String -> Int -> String -> String -> IO () 
-startIRC server port nick channel = do
+startIRC :: ServerName -> Int -> String -> ChannelName -> Maybe String -> IO () 
+startIRC server port nick channel (Just password) = do
+    connection <- getIRCConnection server port nick
+    connection' <- doJoin connection channel
+    putIRCLn (network connection') $ createPrivateMessage "NickServ" $ unwords ["IDENTIFY", nick, password]
+    listen connection' (logHandle connection') channel
+
+startIRC server port nick channel Nothing = do
+    connection <- getIRCConnection server port nick
+    connection' <- doJoin connection channel
+    listen connection' (logHandle connection') channel
+
+getIRCConnection :: ServerName -> Int -> String -> IO IRCConnection
+getIRCConnection server port nick = do
     file_handle <- openFile "mbot.log" AppendMode
     network_handle <- connectTo server (PortNumber (fromIntegral port))
 
     hSetBuffering network_handle NoBuffering
     hSetBuffering file_handle NoBuffering
 
-    let connection = IRCConnection server network_handle file_handle Map.empty nick
     putIRCLn network_handle $ createNickMessage nick
     putIRCLn network_handle $ createUserMessage nick
 
+    let connection = IRCConnection server network_handle file_handle Map.empty nick
     handleFirstPing connection -- Some networks include a pong reply as part of the join process
-    connection' <- doJoin connection channel
-    listen connection' file_handle channel
+    return connection
 
 -- Input methods
 -- These actually get data from the server.
