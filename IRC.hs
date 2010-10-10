@@ -3,35 +3,17 @@ startIRC
 )
 where
 
+import Control.Monad
 import Data.Bits
 import Data.List
-import Control.Monad
 import qualified Data.Map as Map
+import IRC.Log
+import IRC.Parsers
+import IRC.Types
 import Network
 import System.IO
 import System.Posix
 import Text.Printf
-
-type RawIRCMessage = String
-type ChannelName = String
-type Username = String
-type IRCHandle = Handle
-type LogHandle = Handle
-type CommandName = String
-type PrivmsgCommandName = String
-type ChannelList = Map.Map ChannelName ChannelWatch
-type ServerName = String
-
-data ChannelWatch = ChannelWatch {
-                            connection :: IRCConnection,
-                            channelName :: ChannelName }
-
-data IRCConnection = IRCConnection { 
-                                    serverName :: ServerName,
-                                    network :: IRCHandle,
-                                    logHandle :: LogHandle,
-                                    channels :: ChannelList,
-                                    nickUsed :: String }
 
 
 maxWaitForFirstPing = 10 
@@ -64,76 +46,6 @@ createPartMessage channel = unwords ["PART", channel]
 
 createQuitMessage = "QUIT" -- Mostly for consistency
 
--- Message Parsing 
--- These take a command, and extract relevant information from it.
-
-getPingServer :: RawIRCMessage -> String
-getPingServer = getMultiWordPortion
-
-getMultiWordPortion :: RawIRCMessage -> String
-getMultiWordPortion = concat . tail . split ':' . tail 
-
-getHostMask :: RawIRCMessage -> Username
-getHostMask = takeWhile(/= ' ') . tail . dropWhile (/= '!')
- 
-getUser :: RawIRCMessage -> Username
-getUser = tail . takeWhile (/= '!')
-
--- Does not work for JOIN
-getRoom :: RawIRCMessage -> ChannelName
--- RTL: Drop user info, drop space after user info, drop command, drop space after command, get first parameter (room where relevant)
-getRoom = takeWhile (/= ' ') . tail . dropWhile (/= ' ') . tail . dropWhile (/= ' ')
-
--- Use getRoom for all other commands but join.
-getJoinRoom :: RawIRCMessage -> ChannelName
-getJoinRoom = getMultiWordPortion
-
-getCommandName :: RawIRCMessage -> CommandName
-getCommandName = takeWhile (/= ' ') . tail . dropWhile (/= ' ') 
-
-getPrivmsgCommandName :: RawIRCMessage -> PrivmsgCommandName
-getPrivmsgCommandName = takeWhile (/= ' ') . getMultiWordPortion
-
-getArgumentByPosition :: RawIRCMessage -> Int -> CommandName
-getArgumentByPosition message pos = words message !! pos
-
-getUserAndMessage :: RawIRCMessage -> (Username, String)
-getUserAndMessage x = (username, message) where
-                username = getUser x 
-                message = getMultiWordPortion x
-
--- Format Messages For Logs
--- These take a recieved message, and return a format suitable for writing to the log file.
-
-formatFromUserForLog :: RawIRCMessage -> String -> String
-formatFromUserForLog format_string x = printf format_string username message where  
-                details = getUserAndMessage x
-                username = fst details
-                message = snd details
-
-formatPrivmsgForLog :: RawIRCMessage -> String
-formatPrivmsgForLog = formatFromUserForLog "<%s> %s"
-
-formatNoticeForLog :: RawIRCMessage -> String
-formatNoticeForLog = printf "Notice: %s" . getMultiWordPortion
-
-formatQuitForLog :: RawIRCMessage -> String
-formatQuitForLog = formatFromUserForLog "%s quit (%s)"
-
-formatJoinForLog :: RawIRCMessage -> String
-formatJoinForLog = formatFromUserForLog "%s joined %s"
-
-formatTopicForLog :: RawIRCMessage -> String
-formatTopicForLog = printf "Topic: %s" . getMultiWordPortion
-
-formatNamesListForLog :: RawIRCMessage -> String
-formatNamesListForLog = printf "Users in room: %s" . getMultiWordPortion
-
-formatNickChangeForLog :: RawIRCMessage -> String
-formatNickChangeForLog = formatFromUserForLog "%s changed nick to %s"
-
-formatPartForLog :: RawIRCMessage -> String
-formatPartForLog message = printf "%s left %s" (getUser message) ((words message) !! 3)
 
 -- PM Handlers
 -- These handle private message commands that need to be reacted to.
@@ -141,7 +53,7 @@ formatPartForLog message = printf "%s left %s" (getUser message) ((words message
 handlePrivmsg :: IRCHandle -> LogHandle -> RawIRCMessage -> Maybe ChannelWatch -> IO ()
 handlePrivmsg nh fh message (Just channel)
     | privmsgIsHandled command_name = runHandler (Map.lookup command_name privmsgHandlers) channel nh
-    | otherwise = logMessage fh (Just formatPrivmsgForLog) message
+    | otherwise = logMessage fh (getCommandName message) message
     where
         command_name = getPrivmsgCommandName message
 handlePrivmsg nh fh message Nothing = return ()
@@ -172,23 +84,10 @@ sendCommandList = sendTextToChannel "!info, !version, !commands"
 eval :: IRCConnection -> LogHandle -> RawIRCMessage -> ChannelName -> IO ()
 eval con fh message channel
     | checkCommandName message "PRIVMSG" = handlePrivmsg (network con) fh message (Map.lookup channel (channels con))
-    | commandHasFormatter command = logMessage fh (Map.lookup command commandFormatters) message
+    | commandHasLogger command = logMessage fh command message
     | commandIsIgnorable message = return ()
     | otherwise = hPutStrLn fh message
     where command = getCommandName message
-
-commandHasFormatter :: CommandName -> Bool
-commandHasFormatter command = Map.member command commandFormatters
-
-commandFormatters = Map.fromList [
-    ("PRIVMSG", formatPrivmsgForLog),
-    ("JOIN", formatJoinForLog),
-    ("NICK", formatNickChangeForLog),
-    ("PART", formatPartForLog),
-    ("QUIT", formatQuitForLog),
-    ("NOTICE", formatNoticeForLog),
-    ("353", formatNamesListForLog),
-    ("332", formatTopicForLog)]
 
 ignorableCommands = [
     -- Commands we don't need yet
@@ -225,21 +124,12 @@ checkCommandName :: RawIRCMessage -> CommandName -> Bool
 checkCommandName recieved command = command == getCommandName recieved 
 
 
--- Utility function
-split :: Char -> String -> [String]
-split delim [] = [""]
-split delim (c:cs) 
-    | c == delim = "" : rest
-    | otherwise = (c : head rest) : tail rest
-    where
-        rest = split delim cs
-
 -- Sets up the main IRC connection.
 startIRC :: ServerName -> Int -> String -> ChannelName -> Maybe String -> IO () 
 startIRC server port nick channel (Just password) = do
     connection <- getIRCConnection server port nick
     connection' <- doJoin connection channel
-    putIRCLn (network connection') $ createPrivateMessage "NickServ" $ unwords ["IDENTIFY", nick, password]
+    putIRCLn (network connection') $ createPrivateMessage "NickServ" $ unwords ["IDENTIFY", password]
     listen connection' (logHandle connection') channel
 
 startIRC server port nick channel Nothing = do
@@ -306,5 +196,3 @@ doJoin con channel = do
 sendTextToChannel :: String -> ChannelWatch -> IRCHandle -> IO ()
 sendTextToChannel message channel handle = putIRCLn handle $ createChannelMessage channel message
 
-logMessage :: LogHandle -> Maybe (RawIRCMessage -> String) -> RawIRCMessage -> IO ()
-logMessage fh (Just formatf) = hPutStrLn fh . formatf 
