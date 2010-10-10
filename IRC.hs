@@ -158,10 +158,10 @@ privmsgIsHandled :: PrivmsgCommandName -> Bool
 privmsgIsHandled command = Map.member command privmsgHandlers
 
 sendVersion ::  ChannelWatch -> IRCHandle -> IO ()
-sendVersion = sendTextToChannel "0.1" 
+sendVersion = sendTextToChannel "0.2-dev -- http://github.com/Macha/Mbot" 
 
 sendInfo :: ChannelWatch -> IRCHandle -> IO ()
-sendInfo channel = sendTextToChannel "Version 0.1" channel
+sendInfo channel = sendTextToChannel "Mbot Version 0.2-dev (c) Macha <macha@webicity.info> -- http://github.com/Macha/Mbot" channel
 
 sendCommandList :: ChannelWatch -> IRCHandle -> IO ()
 sendCommandList = sendTextToChannel "!info, !version, !commands"
