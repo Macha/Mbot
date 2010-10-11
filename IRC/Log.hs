@@ -63,5 +63,5 @@ formatNickChangeForLog :: RawIRCMessage -> String
 formatNickChangeForLog = formatFromUserForLog "%s changed nick to %s"
 
 formatPartForLog :: RawIRCMessage -> String
-formatPartForLog message = printf "%s left %s" (getUser message) ((words message) !! 3)
+formatPartForLog message = printf "%s left %s" (getUser message) ((words message) !! 2)
 
